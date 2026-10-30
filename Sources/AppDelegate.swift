@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
     private let resumeItem = NSMenuItem(title: "Resume", action: #selector(resume), keyEquivalent: "")
     private let intervalItem = NSMenuItem(title: "Break Every", action: nil, keyEquivalent: "")
     private let intervalMenu = NSMenu()
+    private let customIntervalItem = NSMenuItem(title: "Custom…", action: #selector(setCustomInterval), keyEquivalent: "")
     private let soundItem = NSMenuItem(title: "Sound", action: #selector(toggleSound), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
 
@@ -88,6 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
             item.tag = minutes
             intervalMenu.addItem(item)
         }
+        intervalMenu.addItem(.separator())
+        customIntervalItem.target = self
+        intervalMenu.addItem(customIntervalItem)
         intervalItem.submenu = intervalMenu
 
         for item in [intervalItem, soundItem, loginItem] {
@@ -139,9 +143,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         pauseItem.isEnabled = !onBreak
         pauseItem.isHidden = isPaused
         resumeItem.isHidden = !isPaused
-        for item in intervalMenu.items {
-            item.state = TimeInterval(item.tag * 60) == Prefs.workInterval ? .on : .off
+        var isPresetInterval = false
+        for item in intervalMenu.items where item.tag > 0 {
+            let selected = TimeInterval(item.tag * 60) == Prefs.workInterval
+            item.state = selected ? .on : .off
+            isPresetInterval = isPresetInterval || selected
         }
+        customIntervalItem.state = isPresetInterval ? .off : .on
+        customIntervalItem.title = isPresetInterval ? "Custom…" : "Custom (\(Self.intervalMinutes) min)…"
         soundItem.state = Prefs.soundEnabled ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
@@ -155,9 +164,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         scheduler.pause(for: duration > 0 ? duration : nil)
     }
 
-    /// Changing the interval starts a fresh countdown with the new length.
     @objc private func setInterval(_ sender: NSMenuItem) {
-        Prefs.workInterval = TimeInterval(sender.tag * 60)
+        applyInterval(minutes: sender.tag)
+    }
+
+    @objc private func setCustomInterval() {
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = "\(Self.intervalMinutes)"
+        field.placeholderString = "Minutes"
+
+        let alert = NSAlert()
+        alert.messageText = "Break Every"
+        alert.informativeText = "Minutes of screen time between eye breaks (1–240)."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard let minutes = Int(text), (1...240).contains(minutes) else {
+            let error = NSAlert()
+            error.messageText = "“\(text)” isn't a valid interval"
+            error.informativeText = "Enter a whole number of minutes from 1 to 240."
+            error.runModal()
+            setCustomInterval()
+            return
+        }
+        applyInterval(minutes: minutes)
+    }
+
+    /// Changing the interval starts a fresh countdown with the new length.
+    private func applyInterval(minutes: Int) {
+        Prefs.workInterval = TimeInterval(minutes * 60)
         if scheduler.state == .working || scheduler.state == .away {
             scheduler.restart()
         } else {
@@ -205,6 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         guard Prefs.soundEnabled else { return }
         NSSound(named: name)?.play()
     }
+
+    private static var intervalMinutes: Int { Int((Prefs.workInterval / 60).rounded()) }
 
     /// "20m" down to "1m", then "59s".
     private static func shortTime(_ interval: TimeInterval) -> String {
