@@ -1,10 +1,10 @@
 # EyeBreak
 
-Menu bar app for the 20-20-20 rule: every 20 minutes of screen time, a popup asks you to look ~6 m (20 ft) away for 20 seconds.
+Menu bar app for the 20-20-20 rule: every 20 minutes (adjustable) of screen time, a popup asks you to look ~6 m (20 ft) away for 20 seconds.
 
 - Countdown popup with Skip / Snooze 5m; doesn't steal keyboard focus
 - Timer only counts while you're at the screen: locking the screen, sleep, or 5+ min without input (unless a video is playing) restarts it
-- Sound, daily break counter, pause (30 min / 1 h / until resumed), start at login
+- Break interval setting (10–60 min, default 20), sound, daily break counter, pause (30 min / 1 h / until resumed), start at login
 
 ## Build
 

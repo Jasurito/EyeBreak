@@ -7,7 +7,11 @@ import Foundation
 enum Prefs {
     private static let defaults = UserDefaults.standard
 
-    static var workInterval: TimeInterval { positive("workSeconds") ?? 20 * 60 }
+    /// Screen time between breaks.
+    static var workInterval: TimeInterval {
+        get { positive("workSeconds") ?? 20 * 60 }
+        set { defaults.set(newValue, forKey: "workSeconds") }
+    }
     static var breakDuration: Int { Int(positive("breakSeconds") ?? 20) }
     static var snoozeInterval: TimeInterval { positive("snoozeSeconds") ?? 5 * 60 }
 

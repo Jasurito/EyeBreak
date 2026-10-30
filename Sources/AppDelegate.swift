@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
     private let restartItem = NSMenuItem(title: "Restart Timer", action: #selector(restart), keyEquivalent: "r")
     private let pauseItem = NSMenuItem(title: "Pause", action: nil, keyEquivalent: "")
     private let resumeItem = NSMenuItem(title: "Resume", action: #selector(resume), keyEquivalent: "")
+    private let intervalItem = NSMenuItem(title: "Break Every", action: nil, keyEquivalent: "")
+    private let intervalMenu = NSMenu()
     private let soundItem = NSMenuItem(title: "Sound", action: #selector(toggleSound), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
 
@@ -80,7 +82,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         }
         menu.addItem(.separator())
 
-        for item in [soundItem, loginItem] {
+        for minutes in [10, 15, 20, 25, 30, 45, 60] {
+            let item = NSMenuItem(title: "\(minutes) Minutes", action: #selector(setInterval(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = minutes
+            intervalMenu.addItem(item)
+        }
+        intervalItem.submenu = intervalMenu
+
+        for item in [intervalItem, soundItem, loginItem] {
             item.target = self
             menu.addItem(item)
         }
@@ -129,6 +139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         pauseItem.isEnabled = !onBreak
         pauseItem.isHidden = isPaused
         resumeItem.isHidden = !isPaused
+        for item in intervalMenu.items {
+            item.state = TimeInterval(item.tag * 60) == Prefs.workInterval ? .on : .off
+        }
         soundItem.state = Prefs.soundEnabled ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
@@ -140,6 +153,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
     @objc private func pause(_ sender: NSMenuItem) {
         let duration = sender.representedObject as? Double ?? 0
         scheduler.pause(for: duration > 0 ? duration : nil)
+    }
+
+    /// Changing the interval starts a fresh countdown with the new length.
+    @objc private func setInterval(_ sender: NSMenuItem) {
+        Prefs.workInterval = TimeInterval(sender.tag * 60)
+        if scheduler.state == .working || scheduler.state == .away {
+            scheduler.restart()
+        } else {
+            refresh()
+        }
     }
 
     @objc private func toggleSound() {
