@@ -1,0 +1,51 @@
+# Push a tag like v1.2.0 to build a universal app, publish a GitHub release,
+# and update the Homebrew cask in Jasurito/homebrew-tap.
+#
+# Needs repo secret TAP_GITHUB_TOKEN: a fine-grained token with
+# Contents: read and write on Jasurito/homebrew-tap.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build universal app
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          make zip VERSION="$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SHA256=$(shasum -a 256 "build/EyeBreak-$VERSION.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "build/EyeBreak-$VERSION.zip" \
+            --title "EyeBreak $VERSION" --generate-notes
+
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: tap
+
+      - name: Update Homebrew cask
+        run: |
+          mkdir -p tap/Casks
+          sed -e '/^# /d' -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$SHA256/" \
+            packaging/eyebreak.rb > tap/Casks/eyebreak.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/eyebreak.rb
+          git commit -m "eyebreak $VERSION"
+          git push

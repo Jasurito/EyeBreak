@@ -1,23 +1,29 @@
 APP     := EyeBreak
+VERSION ?= 0.0.0-dev
+ARCHS   ?= $(shell uname -m)
 BUILD   := build
 BUNDLE  := $(BUILD)/$(APP).app
-DEST    := /Applications
-ARCH    := $(shell uname -m)
+ZIP     := $(BUILD)/$(APP)-$(VERSION).zip
 SOURCES := $(wildcard Sources/*.swift)
 
-.PHONY: all app run install uninstall clean
+.PHONY: all app run zip clean
 
 all: app
 
 app: $(BUNDLE)
 
 $(BUNDLE): $(SOURCES) Resources/Info.plist $(BUILD)/AppIcon.icns
+	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Resources
-	swiftc -O -swift-version 5 -target $(ARCH)-apple-macos13.0 $(SOURCES) -o $@/Contents/MacOS/$(APP)
+	for arch in $(ARCHS); do \
+		swiftc -O -swift-version 5 -target $$arch-apple-macos13.0 $(SOURCES) -o $(BUILD)/$(APP)-$$arch || exit 1; \
+	done
+	lipo -create $(foreach arch,$(ARCHS),$(BUILD)/$(APP)-$(arch)) -output $@/Contents/MacOS/$(APP)
 	cp Resources/Info.plist $@/Contents/Info.plist
+	/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(VERSION)" \
+		-c "Set :CFBundleVersion $(VERSION)" $@/Contents/Info.plist
 	cp $(BUILD)/AppIcon.icns $@/Contents/Resources/AppIcon.icns
 	codesign --force --sign - $@
-	touch $@
 
 $(BUILD)/AppIcon.icns: scripts/make_icon.swift
 	mkdir -p $(BUILD)/AppIcon.iconset
@@ -34,15 +40,12 @@ run: app
 	-pkill -x $(APP)
 	open $(BUNDLE)
 
-install: app
-	-pkill -x $(APP)
-	rm -rf $(DEST)/$(APP).app
-	cp -R $(BUNDLE) $(DEST)/
-	open $(DEST)/$(APP).app
-
-uninstall:
-	-pkill -x $(APP)
-	rm -rf $(DEST)/$(APP).app
+# Release archive: universal (Apple Silicon + Intel) build stamped with VERSION.
+zip:
+	rm -rf $(BUNDLE)
+	$(MAKE) app ARCHS="arm64 x86_64" VERSION=$(VERSION)
+	cd $(BUILD) && ditto -c -k --norsrc --noextattr --noacl --keepParent $(APP).app $(APP)-$(VERSION).zip
+	shasum -a 256 $(ZIP)
 
 clean:
 	rm -rf $(BUILD)
