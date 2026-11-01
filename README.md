@@ -14,7 +14,7 @@ brew install --cask jasurito/tap/eyebreak
 
 Requires macOS 13 or later, Apple Silicon or Intel. Update with `brew upgrade --cask eyebreak`, remove with `brew uninstall --cask eyebreak` (turn off "Start at Login" in the menu first).
 
-The app is open source but not notarized by Apple (no paid developer account), so the cask removes the macOS quarantine flag after install. Without that, macOS would refuse the first launch. If you download the zip from [Releases](https://github.com/Jasurito/EyeBreak/releases) manually, right-click the app → Open the first time.
+The app is open source but not notarized by Apple (no paid developer account), so the cask removes the macOS quarantine flag after install. Without that, macOS would refuse the first launch. If you download the zip from [Releases](https://github.com/Jasurito/EyeBreak/releases) manually, try opening the app once, then allow it in System Settings → Privacy & Security → Open Anyway.
 
 ## Build from source
 
