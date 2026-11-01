@@ -16,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
     private let intervalItem = NSMenuItem(title: "Break Every", action: nil, keyEquivalent: "")
     private let intervalMenu = NSMenu()
     private let customIntervalItem = NSMenuItem(title: "Custom…", action: #selector(setCustomInterval), keyEquivalent: "")
+    private let breakLengthItem = NSMenuItem(title: "Break Length", action: nil, keyEquivalent: "")
+    private let breakLengthMenu = NSMenu()
+    private let customBreakLengthItem = NSMenuItem(title: "Custom…", action: #selector(setCustomBreakLength), keyEquivalent: "")
     private let soundItem = NSMenuItem(title: "Sound", action: #selector(toggleSound), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
 
@@ -94,7 +97,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         intervalMenu.addItem(customIntervalItem)
         intervalItem.submenu = intervalMenu
 
-        for item in [intervalItem, soundItem, loginItem] {
+        for (title, seconds) in [("10 Seconds", 10), ("20 Seconds", 20), ("30 Seconds", 30),
+                                 ("45 Seconds", 45), ("1 Minute", 60), ("2 Minutes", 120)] {
+            let item = NSMenuItem(title: title, action: #selector(setBreakLength(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = seconds
+            breakLengthMenu.addItem(item)
+        }
+        breakLengthMenu.addItem(.separator())
+        customBreakLengthItem.target = self
+        breakLengthMenu.addItem(customBreakLengthItem)
+        breakLengthItem.submenu = breakLengthMenu
+
+        for item in [intervalItem, breakLengthItem, soundItem, loginItem] {
             item.target = self
             menu.addItem(item)
         }
@@ -143,16 +158,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         pauseItem.isEnabled = !onBreak
         pauseItem.isHidden = isPaused
         resumeItem.isHidden = !isPaused
-        var isPresetInterval = false
-        for item in intervalMenu.items where item.tag > 0 {
-            let selected = TimeInterval(item.tag * 60) == Prefs.workInterval
-            item.state = selected ? .on : .off
-            isPresetInterval = isPresetInterval || selected
-        }
-        customIntervalItem.state = isPresetInterval ? .off : .on
-        customIntervalItem.title = isPresetInterval ? "Custom…" : "Custom (\(Self.intervalMinutes) min)…"
+        markSelected(Self.intervalMinutes, in: intervalMenu, custom: customIntervalItem, unit: "min")
+        markSelected(Prefs.breakDuration, in: breakLengthMenu, custom: customBreakLengthItem, unit: "sec")
         soundItem.state = Prefs.soundEnabled ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    }
+
+    /// Checks the preset matching `value`, or the Custom item if none does.
+    private func markSelected(_ value: Int, in menu: NSMenu, custom: NSMenuItem, unit: String) {
+        var isPreset = false
+        for item in menu.items where item.tag > 0 {
+            item.state = item.tag == value ? .on : .off
+            isPreset = isPreset || item.tag == value
+        }
+        custom.state = isPreset ? .off : .on
+        custom.title = isPreset ? "Custom…" : "Custom (\(value) \(unit))…"
     }
 
     @objc private func breakNow() { scheduler.breakNow() }
@@ -169,31 +189,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
     }
 
     @objc private func setCustomInterval() {
+        if let minutes = promptForNumber(title: "Break Every",
+                                         message: "Minutes of screen time between eye breaks (1–240).",
+                                         current: Self.intervalMinutes, range: 1...240) {
+            applyInterval(minutes: minutes)
+        }
+    }
+
+    /// A new break length applies from the next break.
+    @objc private func setBreakLength(_ sender: NSMenuItem) {
+        Prefs.breakDuration = sender.tag
+        refresh()
+    }
+
+    @objc private func setCustomBreakLength() {
+        if let seconds = promptForNumber(title: "Break Length",
+                                         message: "Seconds to rest your eyes during each break (5–600).",
+                                         current: Prefs.breakDuration, range: 5...600) {
+            Prefs.breakDuration = seconds
+            refresh()
+        }
+    }
+
+    /// Asks for a whole number in `range`, asking again after invalid input. Returns nil on Cancel.
+    private func promptForNumber(title: String, message: String, current: Int, range: ClosedRange<Int>) -> Int? {
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        field.stringValue = "\(Self.intervalMinutes)"
-        field.placeholderString = "Minutes"
+        field.stringValue = "\(current)"
 
         let alert = NSAlert()
-        alert.messageText = "Break Every"
-        alert.informativeText = "Minutes of screen time between eye breaks (1–240)."
+        alert.messageText = title
+        alert.informativeText = message
         alert.accessoryView = field
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
 
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
 
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard let minutes = Int(text), (1...240).contains(minutes) else {
-            let error = NSAlert()
-            error.messageText = "“\(text)” isn't a valid interval"
-            error.informativeText = "Enter a whole number of minutes from 1 to 240."
-            error.runModal()
-            setCustomInterval()
-            return
-        }
-        applyInterval(minutes: minutes)
+        if let number = Int(text), range.contains(number) { return number }
+
+        let error = NSAlert()
+        error.messageText = "“\(text)” isn't valid"
+        error.informativeText = "Enter a whole number from \(range.lowerBound) to \(range.upperBound)."
+        error.runModal()
+        return promptForNumber(title: title, message: message, current: current, range: range)
     }
 
     /// Changing the interval starts a fresh countdown with the new length.

@@ -14,12 +14,10 @@ enum BreakOutcome {
 /// Counts down screen time and decides when a break is due.
 ///
 /// Time only counts while you're at the screen. Being away (screen locked, Mac asleep,
-/// or no input for `idleThreshold`) for at least `restThreshold` counts as a rest, so the
-/// countdown starts over when you come back.
+/// or no input for `idleThreshold`) for at least as long as a break counts as a rest, so
+/// the countdown starts over when you come back.
 @MainActor
 final class Scheduler: NSObject {
-    /// Away at least this long gives your eyes the same rest as a break.
-    static let restThreshold: TimeInterval = 20
     /// No keyboard or mouse input for this long means you've stepped away.
     static let idleThreshold: TimeInterval = 5 * 60
 
@@ -144,7 +142,7 @@ final class Scheduler: NSObject {
     }
 
     private func comeBack(at now: Date) {
-        if let awaySince, now.timeIntervalSince(awaySince) >= Self.restThreshold {
+        if let awaySince, now.timeIntervalSince(awaySince) >= TimeInterval(Prefs.breakDuration) {
             remaining = Prefs.workInterval
         }
         awaySince = nil

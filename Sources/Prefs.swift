@@ -12,7 +12,11 @@ enum Prefs {
         get { positive("workSeconds") ?? 20 * 60 }
         set { defaults.set(newValue, forKey: "workSeconds") }
     }
-    static var breakDuration: Int { Int(positive("breakSeconds") ?? 20) }
+    /// Length of a break, in seconds.
+    static var breakDuration: Int {
+        get { Int(positive("breakSeconds") ?? 20) }
+        set { defaults.set(newValue, forKey: "breakSeconds") }
+    }
     static var snoozeInterval: TimeInterval { positive("snoozeSeconds") ?? 5 * 60 }
 
     static var soundEnabled: Bool {
