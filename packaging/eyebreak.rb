@@ -27,5 +27,8 @@ cask "eyebreak" do
 
   uninstall quit: "com.jasurito.EyeBreak"
 
-  zap trash: "~/Library/Preferences/com.jasurito.EyeBreak.plist"
+  zap trash: [
+    "~/Library/Application Support/EyeBreak",
+    "~/Library/Preferences/com.jasurito.EyeBreak.plist",
+  ]
 end

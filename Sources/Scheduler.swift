@@ -29,6 +29,8 @@ final class Scheduler: NSObject {
     }
 
     weak var delegate: SchedulerDelegate?
+    /// Called when the screen locks or unlocks, or the Mac or display sleeps or wakes.
+    var onPresenceChange: (() -> Void)?
     private(set) var state: State = .working
     private(set) var remaining: TimeInterval = Prefs.workInterval
 
@@ -151,7 +153,7 @@ final class Scheduler: NSObject {
 
     // MARK: - Presence detection
 
-    private var isLockedOrAsleep: Bool { screenLocked || displayAsleep || systemAsleep }
+    var isLockedOrAsleep: Bool { screenLocked || displayAsleep || systemAsleep }
 
     private var isAway: Bool {
         isLockedOrAsleep || (idleSeconds >= Self.idleThreshold && !isDisplaySleepBlocked)
@@ -176,6 +178,7 @@ final class Scheduler: NSObject {
             goAway(since: Date())
         }
         tick()
+        onPresenceChange?()
     }
 
     @objc private func screenDidLock(_ note: Notification) { screenLocked = true; lockStateChanged() }

@@ -2,25 +2,23 @@ import AppKit
 import ServiceManagement
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate, DropsSchedulerDelegate {
     private let scheduler = Scheduler()
     private let breakPanel = BreakPanelController()
+    private let drops = DropsScheduler()
+    private let dropsPanel = DropsPanelController()
+    private let serverSync = ServerSync()
+    private lazy var settingsWindow = SettingsWindowController(scheduler: scheduler, drops: drops, sync: serverSync)
     private var statusItem: NSStatusItem!
 
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let breaksLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let dropsLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let breakNowItem = NSMenuItem(title: "Take Break Now", action: #selector(breakNow), keyEquivalent: "b")
     private let restartItem = NSMenuItem(title: "Restart Timer", action: #selector(restart), keyEquivalent: "r")
     private let pauseItem = NSMenuItem(title: "Pause", action: nil, keyEquivalent: "")
     private let resumeItem = NSMenuItem(title: "Resume", action: #selector(resume), keyEquivalent: "")
-    private let intervalItem = NSMenuItem(title: "Break Every", action: nil, keyEquivalent: "")
-    private let intervalMenu = NSMenu()
-    private let customIntervalItem = NSMenuItem(title: "Custom…", action: #selector(setCustomInterval), keyEquivalent: "")
-    private let breakLengthItem = NSMenuItem(title: "Break Length", action: nil, keyEquivalent: "")
-    private let breakLengthMenu = NSMenu()
-    private let customBreakLengthItem = NSMenuItem(title: "Custom…", action: #selector(setCustomBreakLength), keyEquivalent: "")
-    private let soundItem = NSMenuItem(title: "Sound", action: #selector(toggleSound), keyEquivalent: "")
-    private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+    private let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
 
     private lazy var timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -34,11 +32,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         statusItem.menu = buildMenu()
+        installMainMenu()
 
         registerLoginItemOnFirstLaunch()
 
         scheduler.delegate = self
         scheduler.start()
+
+        dropsPanel.onDone = { [weak self] in
+            SoundLibrary.shared.stop()
+            self?.drops.markDone()
+        }
+        dropsPanel.onSnooze = { [weak self] in
+            SoundLibrary.shared.stop()
+            self?.drops.snooze()
+        }
+        drops.delegate = self
+        drops.isPresent = { [weak self] in self?.scheduler.isLockedOrAsleep == false }
+        scheduler.onPresenceChange = { [weak self] in self?.drops.check() }
+        drops.start()
     }
 
     // MARK: - SchedulerDelegate
@@ -48,18 +60,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
     }
 
     func schedulerShouldStartBreak(_ scheduler: Scheduler) {
-        playSound("Purr")
+        SoundLibrary.shared.play(.breakStart)
         breakPanel.show(seconds: Prefs.breakDuration) { [weak self] outcome in
             guard let self else { return }
             if outcome == .completed {
                 Prefs.recordBreak()
-                self.playSound("Glass")
+                SoundLibrary.shared.play(.breakEnd)
             }
             self.scheduler.finishBreak(outcome)
         }
     }
 
+    // MARK: - DropsSchedulerDelegate
+
+    func dropsScheduler(_ scheduler: DropsScheduler, didUpdateDue times: [Date]) {
+        if dropsPanel.update(times) {
+            SoundLibrary.shared.play(.drops)
+        }
+        refresh()
+    }
+
     // MARK: - Menu
+
+    /// Accessory apps show no menu bar, but keys like ⌘V and ⌘W still go through this menu.
+    /// Without it you couldn't paste into Settings.
+    private func installMainMenu() {
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+
+        let item = NSMenuItem()
+        item.submenu = edit
+        let main = NSMenu()
+        main.addItem(item)
+        NSApp.mainMenu = main
+    }
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
@@ -67,8 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
 
         statusLine.isEnabled = false
         breaksLine.isEnabled = false
+        dropsLine.isEnabled = false
         menu.addItem(statusLine)
         menu.addItem(breaksLine)
+        menu.addItem(dropsLine)
         menu.addItem(.separator())
 
         let pauseMenu = NSMenu()
@@ -86,33 +128,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         }
         menu.addItem(.separator())
 
-        for minutes in [10, 15, 20, 25, 30, 45, 60] {
-            let item = NSMenuItem(title: "\(minutes) Minutes", action: #selector(setInterval(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = minutes
-            intervalMenu.addItem(item)
-        }
-        intervalMenu.addItem(.separator())
-        customIntervalItem.target = self
-        intervalMenu.addItem(customIntervalItem)
-        intervalItem.submenu = intervalMenu
-
-        for (title, seconds) in [("10 Seconds", 10), ("20 Seconds", 20), ("30 Seconds", 30),
-                                 ("45 Seconds", 45), ("1 Minute", 60), ("2 Minutes", 120)] {
-            let item = NSMenuItem(title: title, action: #selector(setBreakLength(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = seconds
-            breakLengthMenu.addItem(item)
-        }
-        breakLengthMenu.addItem(.separator())
-        customBreakLengthItem.target = self
-        breakLengthMenu.addItem(customBreakLengthItem)
-        breakLengthItem.submenu = breakLengthMenu
-
-        for item in [intervalItem, breakLengthItem, soundItem, loginItem] {
-            item.target = self
-            menu.addItem(item)
-        }
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
 
         menu.addItem(NSMenuItem(title: "Quit EyeBreak", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -158,21 +175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         pauseItem.isEnabled = !onBreak
         pauseItem.isHidden = isPaused
         resumeItem.isHidden = !isPaused
-        markSelected(Self.intervalMinutes, in: intervalMenu, custom: customIntervalItem, unit: "min")
-        markSelected(Prefs.breakDuration, in: breakLengthMenu, custom: customBreakLengthItem, unit: "sec")
-        soundItem.state = Prefs.soundEnabled ? .on : .off
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-    }
-
-    /// Checks the preset matching `value`, or the Custom item if none does.
-    private func markSelected(_ value: Int, in menu: NSMenu, custom: NSMenuItem, unit: String) {
-        var isPreset = false
-        for item in menu.items where item.tag > 0 {
-            item.state = item.tag == value ? .on : .off
-            isPreset = isPreset || item.tag == value
-        }
-        custom.state = isPreset ? .off : .on
-        custom.title = isPreset ? "Custom…" : "Custom (\(value) \(unit))…"
+        dropsLine.title = drops.statusLine ?? ""
+        dropsLine.isHidden = drops.statusLine == nil
     }
 
     @objc private func breakNow() { scheduler.breakNow() }
@@ -184,72 +188,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         scheduler.pause(for: duration > 0 ? duration : nil)
     }
 
-    @objc private func setInterval(_ sender: NSMenuItem) {
-        applyInterval(minutes: sender.tag)
-    }
-
-    @objc private func setCustomInterval() {
-        if let minutes = promptForNumber(title: "Break Every",
-                                         message: "Minutes of screen time between eye breaks (1–240).",
-                                         current: Self.intervalMinutes, range: 1...240) {
-            applyInterval(minutes: minutes)
-        }
-    }
-
-    /// A new break length applies from the next break.
-    @objc private func setBreakLength(_ sender: NSMenuItem) {
-        Prefs.breakDuration = sender.tag
-        refresh()
-    }
-
-    @objc private func setCustomBreakLength() {
-        if let seconds = promptForNumber(title: "Break Length",
-                                         message: "Seconds to rest your eyes during each break (5–600).",
-                                         current: Prefs.breakDuration, range: 5...600) {
-            Prefs.breakDuration = seconds
-            refresh()
-        }
-    }
-
-    /// Asks for a whole number in `range`, asking again after invalid input. Returns nil on Cancel.
-    private func promptForNumber(title: String, message: String, current: Int, range: ClosedRange<Int>) -> Int? {
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-        field.stringValue = "\(current)"
-
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-
-        let text = field.stringValue.trimmingCharacters(in: .whitespaces)
-        if let number = Int(text), range.contains(number) { return number }
-
-        let error = NSAlert()
-        error.messageText = "“\(text)” isn't valid"
-        error.informativeText = "Enter a whole number from \(range.lowerBound) to \(range.upperBound)."
-        error.runModal()
-        return promptForNumber(title: title, message: message, current: current, range: range)
-    }
-
-    /// Changing the interval starts a fresh countdown with the new length.
-    private func applyInterval(minutes: Int) {
-        Prefs.workInterval = TimeInterval(minutes * 60)
-        if scheduler.state == .working || scheduler.state == .away {
-            scheduler.restart()
-        } else {
-            refresh()
-        }
-    }
-
-    @objc private func toggleSound() {
-        Prefs.soundEnabled.toggle()
-        refresh()
+    @objc private func openSettings() {
+        settingsWindow.show()
     }
 
     // MARK: - Login item
@@ -263,32 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SchedulerDelegate {
         try? SMAppService.mainApp.register()
     }
 
-    @objc private func toggleLoginItem() {
-        let service = SMAppService.mainApp
-        do {
-            if service.status == .enabled {
-                try service.unregister()
-            } else {
-                try service.register()
-            }
-        } catch {
-            NSApp.activate(ignoringOtherApps: true)
-            NSAlert(error: error).runModal()
-        }
-        if service.status == .requiresApproval {
-            SMAppService.openSystemSettingsLoginItems()
-        }
-        refresh()
-    }
-
     // MARK: - Helpers
-
-    private func playSound(_ name: String) {
-        guard Prefs.soundEnabled else { return }
-        NSSound(named: name)?.play()
-    }
-
-    private static var intervalMinutes: Int { Int((Prefs.workInterval / 60).rounded()) }
 
     /// "20m" down to "1m", then "59s".
     private static func shortTime(_ interval: TimeInterval) -> String {

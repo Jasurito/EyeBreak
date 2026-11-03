@@ -6,7 +6,7 @@ BUNDLE  := $(BUILD)/$(APP).app
 ZIP     := $(BUILD)/$(APP)-$(VERSION).zip
 SOURCES := $(wildcard Sources/*.swift)
 
-.PHONY: all app run zip clean
+.PHONY: all app run test zip clean
 
 all: app
 
@@ -39,6 +39,12 @@ $(BUILD)/AppIcon.icns: scripts/make_icon.swift
 run: app
 	-pkill -x $(APP)
 	open $(BUNDLE)
+
+test:
+	mkdir -p $(BUILD)
+	swiftc -swift-version 5 Sources/DropSchedule.swift Sources/NotificationServer.swift \
+		Sources/Telegram.swift Tests/main.swift -o $(BUILD)/tests
+	$(BUILD)/tests
 
 # Release archive: universal (Apple Silicon + Intel) build stamped with VERSION.
 zip:

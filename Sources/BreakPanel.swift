@@ -17,45 +17,14 @@ final class BreakPanelController: NSObject {
 
         let model = BreakModel(total: seconds)
         self.model = model
-        let hosting = FirstMouseHostingView(rootView: BreakView(
-            model: model,
-            onSkip: { [weak self] in self?.finish(.skipped) },
-            onSnooze: { [weak self] in self?.finish(.snoozed) }))
-        let size = hosting.fittingSize
-
-        let background = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
-        background.material = .hudWindow
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.maskImage = Self.roundedMask(radius: 18)
-        hosting.frame = background.bounds
-        hosting.autoresizingMask = [.width, .height]
-        background.addSubview(hosting)
-
-        let panel = BreakPanel(contentRect: NSRect(origin: .zero, size: size),
-                               styleMask: [.borderless, .nonactivatingPanel],
-                               backing: .buffered, defer: false)
-        panel.contentView = background
-        panel.appearance = NSAppearance(named: .darkAqua)
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.setFrameOrigin(Self.origin(for: size))
-
-        // Don't steal focus from whatever you're typing in.
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            panel.animator().alphaValue = 1
+        let view = BreakView(model: model,
+                             onSkip: { [weak self] in self?.finish(.skipped) },
+                             onSnooze: { [weak self] in self?.finish(.snoozed) })
+        // Centered, slightly above the middle of the screen.
+        panel = FloatingPanel.show(view) { size, frame in
+            NSPoint(x: frame.midX - size.width / 2,
+                    y: frame.midY - size.height / 2 + frame.height * 0.1)
         }
-        self.panel = panel
 
         let timer = Timer(timeInterval: 0.25, target: self, selector: #selector(tick),
                           userInfo: nil, repeats: true)
@@ -80,45 +49,11 @@ final class BreakPanelController: NSObject {
         timer?.invalidate()
         timer = nil
         model = nil
-        guard let panel else { return }
-        self.panel = nil
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.25
-            panel.animator().alphaValue = 0
-        }, completionHandler: {
-            panel.orderOut(nil)
-        })
-    }
-
-    /// Centered, slightly above the middle of the screen the mouse is on.
-    private static func origin(for size: NSSize) -> NSPoint {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
-        guard let frame = screen?.visibleFrame else { return .zero }
-        return NSPoint(x: frame.midX - size.width / 2,
-                       y: frame.midY - size.height / 2 + frame.height * 0.1)
-    }
-
-    private static func roundedMask(radius: CGFloat) -> NSImage {
-        let edge = radius * 2 + 1
-        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-            return true
+        if let panel {
+            FloatingPanel.dismiss(panel)
+            self.panel = nil
         }
-        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-        image.resizingMode = .stretch
-        return image
     }
-}
-
-private final class BreakPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-}
-
-/// Lets the buttons respond to the first click even though the panel isn't focused.
-private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @MainActor

@@ -4,9 +4,13 @@ Menu bar app for the 20-20-20 rule: every 20 minutes (adjustable) of screen time
 
 - Countdown popup with Skip / Snooze 5m; doesn't steal keyboard focus
 - Timer only counts while you're at the screen: locking the screen, sleep, or 5+ min without input (unless a video is playing) restarts it
-- Break interval setting: presets 10–60 min or any custom 1–240 min (default 20)
-- Break length setting: presets 10 s–2 min or any custom 5–600 s (default 20)
-- Sound, daily break counter, pause (30 min / 1 h / until resumed), start at login
+- Eye drop schedule: set times and days, get a popup that stays until you press Done or snooze
+- Reminder message: keep the default, pick a template, or write and save your own
+- Missed a dose with the lid closed? The popup appears as soon as you log back in
+- Optional Telegram alerts for eye drops through your own bot, sent from your server or your Mac
+- Choose the sound for each event, and add or remove your own audio files
+- Settings window: break interval (1–240 min, default 20), break length (5–600 s, default 20), sounds, eye drops, Telegram, start at login
+- Daily break counter, pause (30 min / 1 h / until resumed)
 
 ## Install
 
@@ -14,9 +18,38 @@ Menu bar app for the 20-20-20 rule: every 20 minutes (adjustable) of screen time
 brew install --cask jasurito/tap/eyebreak
 ```
 
-Requires macOS 13 or later, Apple Silicon or Intel. Update with `brew upgrade --cask eyebreak`, remove with `brew uninstall --cask eyebreak` (turn off "Start at Login" in the menu first).
+Requires macOS 13 or later, Apple Silicon or Intel. Update with `brew upgrade --cask eyebreak`, remove with `brew uninstall --cask eyebreak` (turn off "Start at login" in Settings first).
 
 The app is open source but not notarized by Apple (no paid developer account), so the cask removes the macOS quarantine flag after install. Without that, macOS would refuse the first launch. If you download the zip from [Releases](https://github.com/Jasurito/EyeBreak/releases) manually, try opening the app once, then allow it in System Settings → Privacy & Security → Open Anyway.
+
+## Telegram alerts
+
+Open Settings → Telegram and follow the steps there: create a bot with [@BotFather](https://t.me/BotFather), paste its token, send `/start` to the bot, then press Find Chat ID. The token is stored in your macOS Keychain. After an upgrade macOS may ask whether EyeBreak can read it. The app isn't signed with a paid certificate, so macOS treats each version as a new app. Choose Always Allow.
+
+Then choose what sends the alerts.
+
+### Server
+
+Your own Linux server sends alerts on time, even with the lid closed. It needs systemd and `curl` (Debian and Ubuntu are fine), and an SSH login that uses a key, as root or with passwordless sudo.
+
+Enter the server's IP or domain and press Save. EyeBreak connects with `ssh` and shows each step in a progress bar, then Done or the reason it failed. This works before you've added any times, so you can press Send Test Message straight away. Whenever you change the schedule or message, press Save again: the server's copy is replaced. Remove from Server takes everything off again.
+
+On the server this creates:
+
+| Path | What |
+| --- | --- |
+| `/etc/systemd/system/eyebreak-notification.service` | Sends one message with `curl` |
+| `/etc/systemd/system/eyebreak-notification.timer` | Your schedule |
+| `/etc/eyebreak/telegram.curl` | Bot token, chat ID and message, readable only by root |
+
+- The bot token is copied to your server. Checks run first, so a failed save leaves the old schedule running.
+- The first connection trusts the server's SSH key and remembers it. If it changes later, EyeBreak refuses to connect.
+- Times use your Mac's time zone at the moment you save. After changing time zone, press Save again.
+- The server only sends the alert at the scheduled time. Done and Snooze apply to the popup on your Mac.
+
+### Local
+
+Your Mac sends the alerts, so nothing goes out while the lid is closed or there's no internet. Alerts go out once the Mac is awake and online, and failed ones are retried until they get through or you press Done.
 
 ## Build from source
 
@@ -24,6 +57,7 @@ Needs only the Xcode Command Line Tools.
 
 ```sh
 make run        # build and launch build/EyeBreak.app (never registers as a login item)
+make test       # eye drop schedule and server script tests
 make zip VERSION=1.2.0   # universal release zip in build/
 ```
 
