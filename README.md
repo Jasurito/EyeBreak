@@ -24,7 +24,9 @@ The app is open source but not notarized by Apple (no paid developer account), s
 
 ## Telegram alerts
 
-Open Settings → Telegram and follow the steps there: create a bot with [@BotFather](https://t.me/BotFather), paste its token, send `/start` to the bot, then press Find Chat ID. The token is stored in your macOS Keychain. After an upgrade macOS may ask whether EyeBreak can read it. The app isn't signed with a paid certificate, so macOS treats each version as a new app. Choose Always Allow.
+Turn on eye drop reminders first: while they're off, the Telegram tab only says so, and its icon is dimmed. Then open Settings → Telegram and follow the steps there: create a bot with [@BotFather](https://t.me/BotFather), paste its token, send `/start` to the bot, then press Find Chat ID. The token is stored in your macOS Keychain.
+
+**Expect a password prompt.** The first time EyeBreak reads the token, macOS asks for your login password: when you press Save with Server selected, or on the first test or alert with Local. Choose Always Allow. It asks once more after each upgrade, because the app isn't signed with a paid certificate and macOS treats each version as a new app.
 
 Then choose what sends the alerts.
 
@@ -33,6 +35,8 @@ Then choose what sends the alerts.
 Your own Linux server sends alerts on time, even with the lid closed. It needs systemd and `curl` (Debian and Ubuntu are fine), and an SSH login that uses a key, as root or with passwordless sudo.
 
 Enter the server's IP or domain and press Save. EyeBreak connects with `ssh` and shows each step in a progress bar, then Done or the reason it failed. This works before you've added any times, so you can press Send Test Message straight away. Whenever you change the schedule or message, press Save again: the server's copy is replaced. Remove from Server takes everything off again.
+
+Check Server looks for anything broken without changing the server or asking for your Keychain password. It compares the files with what Save wrote and checks that the schedule is running and will come back after a restart. It also checks that the token file is readable only by root, that the last alert went out, and that Telegram still accepts the token and chat. You get the next alert time, or a list of problems. Save fixes most of them.
 
 On the server this creates:
 

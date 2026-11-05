@@ -200,6 +200,59 @@ check(explained("sh: 1: sudo: not found").contains("Use root"), "explains missin
 check(explained("first\nsomething odd\n") == "something odd", "unknown errors show their last line")
 check(explained("") == "The server stopped without saying why.", "never shows a blank reason")
 
+// Check: compares the server with the saved install, never sends or writes the token
+let lastSave = ServerInstall(connection: connection(), calendar: ["Mon 08:00:00 UTC", "Tue 09:30:00 UTC"],
+                          chatID: "42", message: "Drops \"now\"\nEYEBREAK")
+let checkScript = try! ServerScript.check(lastSave)
+let installScript = install(lastSave.calendar, message: lastSave.message!)
+func heredocs(_ script: String) -> [String] {
+    var bodies: [String] = [], current: [String]?
+    for line in script.components(separatedBy: "\n") {
+        if line == "EYEBREAK", let body = current {
+            bodies.append(body.joined(separator: "\n")); current = nil
+        } else if current != nil {
+            current!.append(line)
+        } else if line.hasSuffix("<<'EYEBREAK'") {
+            current = []
+        }
+    }
+    return bodies
+}
+let installed = Set(heredocs(installScript).map { $0.components(separatedBy: "\n").filter { !$0.hasPrefix("url = ") }.joined(separator: "\n") })
+check(heredocs(checkScript).allSatisfy(installed.contains), "check compares with exactly what Save writes")
+check(heredocs(checkScript).count == 3, "check compares the service, settings and timer")
+check(!checkScript.contains(goodToken) && !checkScript.contains("sendMessage\"\n"), "check carries no token")
+check(!checkScript.contains("systemctl start") && !checkScript.contains("systemctl restart") && !checkScript.contains("enable eyebreak")
+    && !checkScript.contains("> /etc") && !checkScript.contains("rm -f /etc") && !checkScript.contains("mv "),
+      "check changes nothing on the server")
+check(checkScript.contains("'42'"), "check asks Telegram about the saved chat")
+check(heredocs(checkScript).filter { $0.contains("\nEYEBREAK") || $0.hasPrefix("EYEBREAK") }.isEmpty,
+      "a message can't end a check here-document")
+let emptyCheck = try! ServerScript.check(ServerInstall(connection: connection(), calendar: [], chatID: "42"))
+check(heredocs(emptyCheck).count == 2 && emptyCheck.contains("schedule that wasn't saved"), "no times: a timer is a finding")
+check(emptyCheck.contains("text=💧 Time for your eye drops"), "older saves without a message expect the default")
+check((try? ServerScript.check(ServerInstall(connection: connection(), calendar: [], chatID: "4'2"))) == nil,
+      "check refuses a chat ID that would break out of quotes")
+check((try? ServerScript.check(ServerInstall(connection: connection(), calendar: ["Mon 08:00:00 UTC'; reboot"], chatID: "42"))) == nil,
+      "check refuses a time that would break out of the timer")
+
+let healthy = ServerCheckReport(lines: ["NEXT 1793000000", "something else"])
+check(healthy.isHealthy && healthy.nextAlert == Date(timeIntervalSince1970: 1793000000), "reads the next alert")
+let utc = DateFormatter(); utc.dateFormat = "HH:mm"; utc.timeZone = TimeZone(identifier: "UTC")
+check(healthy.summary(host: "vm1", formatter: utc) == "All good on vm1. Next alert: 07:33.", "healthy summary")
+check(ServerCheckReport(lines: []).summary(host: "vm1", formatter: utc).contains("No alert times"), "healthy with no times")
+check(ServerCheckReport(lines: ["NEXT 0"]).nextAlert == nil, "an unknown next time isn't 1970")
+let broken = ServerCheckReport(lines: ["REPAIR The schedule is stopped.", "PROBLEM No internet.", "LASTFAIL 1793000000"])
+check(!broken.isHealthy && broken.repairs == ["The schedule is stopped."] && broken.problems == ["No internet."], "reads findings")
+let brokenText = broken.summary(host: "vm1", formatter: utc)
+check(brokenText.hasPrefix("Problems on vm1:\n• The schedule is stopped.\n• No internet.\n• The last alert, 07:33, didn't go out."),
+      "lists every finding")
+check(brokenText.hasSuffix("Press Save to set the service up again."), "says Save fixes it")
+check(!ServerCheckReport(lines: ["PROBLEM No internet."]).summary(host: "vm1", formatter: utc).contains("Press Save"),
+      "doesn't promise Save fixes what it can't")
+check(ServerCheckReport(lines: ["LASTFAIL 0"]).summary(host: "vm1", formatter: utc).contains("The last alert didn't go out."),
+      "a failure with no time")
+
 if failures > 0 {
     print("\(failures) failed")
     exit(1)

@@ -11,7 +11,11 @@ enum Telegram {
 
         var errorDescription: String? {
             switch self {
-            case .noToken: return "No bot token saved."
+            case .noToken:
+                // Saved but unreadable: the Keychain prompt was cancelled or denied.
+                return TelegramToken.isSaved
+                    ? "macOS didn't let EyeBreak read the bot token. Try again, enter your login password and choose Always Allow."
+                    : "No bot token saved."
             case .noMessages: return "No messages found. Send /start to your bot in Telegram, then try again."
             case .api(let description): return "Telegram said: \(description)"
             }

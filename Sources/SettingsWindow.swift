@@ -9,7 +9,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let model: SettingsModel
     private var window: NSWindow?
     private let tabs = NSTabViewController()
-    private static let dropsTabIndex = 2
+    private static let telegramTabIndex = 3
+    private var modelChanges: AnyCancellable?
+    private var appearanceChanges: AnyCancellable?
+    private var telegramIconFaded: Bool?
 
     init(scheduler: Scheduler, drops: DropsScheduler, sync: ServerSync) {
         model = SettingsModel(scheduler: scheduler, drops: drops, sync: sync)
@@ -36,7 +39,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            tabs.selectedTabViewItemIndex = Self.dropsTabIndex
+            tabs.selectedTabViewItemIndex = Self.telegramTabIndex
             model.sync.save()
             return false
         case .alertSecondButtonReturn:
@@ -59,7 +62,43 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
+
+        // objectWillChange comes before the change, so look on the next turn of the run loop.
+        modelChanges = model.objectWillChange.sink { [weak self, weak window] in
+            DispatchQueue.main.async {
+                guard let self, let window else { return }
+                self.updateTelegramIcon(in: window)
+            }
+        }
+        // Also draws it the first time.
+        appearanceChanges = window.publisher(for: \.effectiveAppearance).sink { [weak self, weak window] _ in
+            guard let self, let window else { return }
+            self.telegramIconFaded = nil
+            self.updateTelegramIcon(in: window)
+        }
         return window
+    }
+
+    /// Faded while eye drop reminders are off, since there's nothing to send then.
+    private func updateTelegramIcon(in window: NSWindow) {
+        let faded = !model.dropsEnabled
+        guard faded != telegramIconFaded else { return }
+        telegramIconFaded = faded
+        let item = tabs.tabViewItems[Self.telegramTabIndex]
+        let symbol = NSImage(systemSymbolName: "paperplane", accessibilityDescription: item.label)
+        let image = faded ? symbol.flatMap { Self.faded($0, for: window.effectiveAppearance) } : symbol
+        item.image = image
+        window.toolbar?.items.first { $0.label == item.label }?.image = image
+    }
+
+    /// Still a symbol, so it keeps the toolbar's size. The toolbar loses see-through colors,
+    /// so it's a solid gray picked for the window's light or dark look, and redone when that changes.
+    private static func faded(_ symbol: NSImage, for appearance: NSAppearance) -> NSImage? {
+        let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let color = NSColor(white: isDark ? 0.4 : 0.7, alpha: 1)
+        let image = symbol.withSymbolConfiguration(.init(paletteColors: [color]))
+        image?.accessibilityDescription = symbol.accessibilityDescription.map { "\($0), off" }
+        return image
     }
 
     private func tab<Content: View>(_ title: String, symbol: String, _ content: Content) -> NSTabViewItem {
@@ -415,16 +454,17 @@ struct DropsTab: View {
                         .disabled(!model.canSaveMessageTemplate)
                 }
             } footer: {
-                Text("Shown in the popup and sent to Telegram.")
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(!model.dropsEnabled)
-
-            if model.telegramSender == .server {
-                Section("Telegram alerts on your server") {
-                    ServerRow(model: model, showsAllActions: false)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Shown in the popup and sent to Telegram.")
+                        .foregroundStyle(.secondary)
+                    if model.sync.hasUnsavedChanges {
+                        Label("Your server still has the old times and message. Press Save in the Telegram tab.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
+            .disabled(!model.dropsEnabled)
         }
         .formStyle(.grouped)
     }
@@ -580,6 +620,48 @@ struct TelegramTab: View {
     private var isConfigured: Bool { hasToken && !model.telegramChatID.isEmpty }
 
     var body: some View {
+        if model.dropsEnabled {
+            settings
+        } else {
+            remindersOff
+        }
+    }
+
+    /// Telegram only sends eye drop alerts, so without reminders there's nothing to set up.
+    private var remindersOff: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "drop")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 6)
+            Text("Eye drop reminders are off")
+                .font(.title3.weight(.semibold))
+            Text("Turn them on in Eye Drops to use Telegram notifications.")
+                .foregroundStyle(.secondary)
+
+            // A server that still has times keeps sending, so offer to stop it from here.
+            if let installed = model.sync.installed, !installed.calendar.isEmpty || model.sync.state != .idle {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !installed.calendar.isEmpty {
+                        Label("\(installed.connection.host) still sends alerts at the times you saved.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    ServerRow(model: model, showsAllActions: model.telegramSender == .local)
+                }
+                .padding(14)
+                .frame(maxWidth: 440, alignment: .leading)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .multilineTextAlignment(.leading)
+                .padding(.top, 20)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var settings: some View {
         Form {
             Section {
                 Toggle("Send eye drop alerts to Telegram", isOn: $model.telegramEnabled)
@@ -641,7 +723,7 @@ struct TelegramTab: View {
             }
 
             if model.telegramSender == .server {
-                Section("3. Server") {
+                Section {
                     Text("EyeBreak logs in over SSH with your key and installs a systemd service that sends the alerts. The user must be root or have passwordless sudo.")
                     serverField("IP or domain", text: $model.serverConnection.host, prompt: "203.0.113.10")
                     serverField("SSH user", text: $model.serverConnection.user, prompt: "root")
@@ -652,12 +734,20 @@ struct TelegramTab: View {
                             .foregroundStyle(.secondary)
                     }
                     ServerRow(model: model, showsAllActions: true)
+                } header: {
+                    Text("3. Server")
+                } footer: {
+                    KeychainNote.save
                 }
             } else {
-                Section("3. Test") {
+                Section {
                     Button("Send Test Message", action: sendTest)
                         .disabled(!isConfigured || isBusy)
                     statusRow
+                } header: {
+                    Text("3. Test")
+                } footer: {
+                    KeychainNote.local
                 }
             }
         }
@@ -744,8 +834,23 @@ struct TelegramTab: View {
     }
 }
 
-/// Save button, progress bar and result for the server. Shared by the Eye Drops and Telegram
-/// tabs, so a save started on one shows on the other.
+/// Warns about the macOS password prompt before it appears. EyeBreak isn't signed with a
+/// paid certificate, so macOS asks before giving the token to each new version.
+private enum KeychainNote {
+    static var save: some View {
+        note("Pressing Save makes macOS ask for your login password, so EyeBreak can read the bot token from your Keychain. Choose Always Allow, or it asks on every Save. It asks once more after each EyeBreak update.")
+    }
+
+    static var local: some View {
+        note("The first test or alert makes macOS ask for your login password, so EyeBreak can read the bot token from your Keychain. Choose Always Allow, or each alert waits for you to type it. It asks once more after each EyeBreak update.")
+    }
+
+    private static func note(_ text: String) -> some View {
+        Label(text, systemImage: "key.fill").foregroundStyle(.secondary)
+    }
+}
+
+/// Save button, progress bar and result for the server.
 private struct ServerRow: View {
     @ObservedObject var model: SettingsModel
     /// Also offer Send Test and Remove, which only make sense next to the server's details.
@@ -762,6 +867,8 @@ private struct ServerRow: View {
                 if showsAllActions, sync.installed != nil {
                     if model.telegramSender == .server {
                         Button("Send Test Message", action: sync.sendTest)
+                        Button("Check Server", action: sync.check)
+                            .help("Looks for anything broken on the server, without changing it")
                     }
                     Spacer()
                     if sync.canForget {
@@ -777,25 +884,31 @@ private struct ServerRow: View {
         }
     }
 
+    /// The last result stays up next to unsaved changes, so a check's answer isn't hidden.
     @ViewBuilder
     private var status: some View {
-        switch sync.state {
-        case .running(let progress):
+        if case .running(let progress) = sync.state {
             ProgressView(progress.label, value: progress.fraction)
-        case .failed(let reason):
-            Label(reason, systemImage: "xmark.octagon.fill")
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-        case .done, .idle:
-            if sync.hasUnsavedChanges {
-                Text("Unsaved changes: the server still has the old settings.")
-                    .foregroundStyle(.orange)
-            } else if case .done(let message) = sync.state {
-                Label(message, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            } else if sync.installed == nil, model.telegramSender == .server {
-                Text("Nothing is on the server yet. Press Save to set it up.")
-                    .foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                switch sync.state {
+                case .done(let message):
+                    Label(message, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .failed(let reason):
+                    Label(reason, systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                case .idle, .running:
+                    EmptyView()
+                }
+                if sync.hasUnsavedChanges {
+                    Text("Unsaved changes: the server still has the old settings.")
+                        .foregroundStyle(.orange)
+                } else if sync.state == .idle, sync.installed == nil, model.telegramSender == .server {
+                    Text("Nothing is on the server yet. Press Save to set it up.")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

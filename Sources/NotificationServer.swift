@@ -121,27 +121,12 @@ enum ServerScript {
         guard Telegram.isValidToken(token) else {
             throw ServerFailure("The saved bot token isn't valid. Remove it and add it again.")
         }
-        guard Telegram.isValidChatID(chatID) else {
-            throw ServerFailure("Find your chat ID in the Telegram tab first.")
-        }
-        let valuePattern = #"^[A-Za-z]{3}(,[A-Za-z]{3})* [0-9]{2}:[0-9]{2}:00 [A-Za-z0-9_+/-]+$"#
-        guard calendar.allSatisfy({ $0.range(of: valuePattern, options: .regularExpression) != nil }) else {
-            throw ServerFailure("The schedule can't be sent to the server.")
-        }
+        try validate(calendar: calendar, chatID: chatID)
 
         let quotedTimes = calendar.map { "'\($0)'" }.joined(separator: " ")
-        let timerLines = calendar.map { "OnCalendar=\($0)" }.joined(separator: "\n")
         let schedule = calendar.isEmpty ? clearSchedule : #"""
-        cat > /etc/systemd/system/eyebreak-notification.timer <<'EYEBREAK'
-        [Unit]
-        Description=EyeBreak eye drop schedule
-
-        [Timer]
-        \#(timerLines)
-        AccuracySec=1s
-
-        [Install]
-        WantedBy=timers.target
+        cat > \#(timerPath) <<'EYEBREAK'
+        \#(timerUnit(calendar))
         EYEBREAK
 
         step "5/5 Starting the schedule"
@@ -183,10 +168,158 @@ enum ServerScript {
         step "4/5 Installing the service"
         umask 077
         mkdir -p /etc/eyebreak
-        cat > /etc/eyebreak/telegram.curl.new <<'EYEBREAK'
+        cat > \#(curlPath).new <<'EYEBREAK'
         url = "https://api.telegram.org/bot\#(token)/sendMessage"
-        data-urlencode = "chat_id=\#(chatID)"
-        data-urlencode = "text=💧 \#(curlQuoted(message))"
+        \#(curlSettings(chatID: chatID, message: message))
+        EYEBREAK
+        mv -f \#(curlPath).new \#(curlPath)
+
+        umask 022
+        cat > \#(servicePath) <<'EYEBREAK'
+        \#(serviceUnit)
+        EYEBREAK
+
+        \#(schedule)
+        """#
+    }
+
+    /// Looks over what the last Save put on the server without changing anything. Files are
+    /// compared with what Save would write. Telegram is asked about the token the server has,
+    /// so the Mac's Keychain isn't needed. Prints `REPAIR` for what Save would fix, `PROBLEM`
+    /// for the rest, `NEXT` and `LASTFAIL` with Unix times. See `ServerCheckReport`.
+    static func check(_ installed: ServerInstall) throws -> String {
+        try validate(calendar: installed.calendar, chatID: installed.chatID)
+        let message = installed.message ?? DropMessage.standard
+
+        let schedule = installed.calendar.isEmpty ? #"""
+        [ ! -f \#(timerPath) ] || repair "The server has a schedule that wasn't saved from this Mac."
+        """# : #"""
+        cat > "$tmp/timer" <<'EYEBREAK'
+        \#(timerUnit(installed.calendar))
+        EYEBREAK
+        if [ ! -f \#(timerPath) ]; then
+            repair "The schedule is missing."
+        else
+            cmp -s "$tmp/timer" \#(timerPath) || repair "The schedule on the server isn't the one you saved."
+            systemctl is-enabled --quiet eyebreak-notification.timer ||
+                repair "The schedule won't come back after the server restarts."
+            if systemctl is-active --quiet eyebreak-notification.timer; then
+                echo "NEXT $(when eyebreak-notification.timer NextElapseUSecRealtime)"
+            else
+                repair "The schedule is stopped."
+            fi
+        fi
+        """#
+
+        return #"""
+        \#(helpers)
+        repair() { echo "REPAIR $1"; }
+        problem() { echo "PROBLEM $1"; }
+        # A Unix time, or 0. Older systemd can't print one, so fall back on date.
+        when() {
+            value=$(systemctl show --timestamp=unix --property="$2" --value "$1" 2>/dev/null || true)
+            case "$value" in
+                @*) echo "${value#@}" ;;
+                *) value=$(systemctl show --property="$2" --value "$1" 2>/dev/null || true)
+                   date -d "$value" +%s 2>/dev/null || echo 0 ;;
+            esac
+        }
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+
+        step "1/4 Checking the server"
+        [ -d /run/systemd/system ] || fail "This server doesn't run systemd."
+        if [ ! -f \#(servicePath) ] && [ ! -f \#(curlPath) ]; then
+            fail "EyeBreak isn't on the server anymore. Press Save to set it up again."
+        fi
+        [ -x /usr/bin/curl ] || problem "curl isn't installed on the server, so alerts can't go out. Install it with: apt install curl"
+
+        step "2/4 Checking the service"
+        cat > "$tmp/service" <<'EYEBREAK'
+        \#(serviceUnit)
+        EYEBREAK
+        if [ ! -f \#(servicePath) ]; then
+            repair "The service is missing."
+        elif ! cmp -s "$tmp/service" \#(servicePath); then
+            repair "The service was changed on the server."
+        elif [ "$(systemctl show --property=LoadState --value eyebreak-notification.service)" != loaded ]; then
+            repair "systemd hasn't loaded the service."
+        fi
+        cat > "$tmp/settings" <<'EYEBREAK'
+        \#(curlSettings(chatID: installed.chatID, message: message))
+        EYEBREAK
+        if [ ! -f \#(curlPath) ]; then
+            repair "The file with the bot token is missing."
+        else
+            # Line 1 holds the token, which the Mac doesn't send for a check.
+            tail -n +2 \#(curlPath) | cmp -s "$tmp/settings" - ||
+                repair "The chat ID or message on the server isn't the one you saved."
+            [ "$(stat -c '%a %u' \#(curlPath))" = "600 0" ] ||
+                repair "Other users on the server may be able to read the bot token."
+        fi
+        if [ "$(systemctl show --property=Result --value eyebreak-notification.service)" != success ]; then
+            echo "LASTFAIL $(when eyebreak-notification.service ExecMainExitTimestamp)"
+        fi
+
+        step "3/4 Checking the schedule"
+        \#(schedule)
+
+        step "4/4 Checking Telegram from the server"
+        token=$(sed -n 's|^url = "https://api.telegram.org/bot\([0-9][0-9]*:[A-Za-z0-9_-][A-Za-z0-9_-]*\)/sendMessage"$|\1|p' \#(curlPath) 2>/dev/null || true)
+        if [ -n "$token" ] && [ -x /usr/bin/curl ]; then
+            code=$(printf 'url = "https://api.telegram.org/bot%s/getChat"\ndata-urlencode = "chat_id=%s"\n' "$token" '\#(installed.chatID)' |
+                /usr/bin/curl --silent --output /dev/null --write-out '%{http_code}' --max-time 20 --config - 2>/dev/null || true)
+            case "$code" in
+                200) ;;
+                401|404) repair "Telegram rejects the bot token on the server." ;;
+                400|403) problem "Telegram doesn't know the chat ID. Send /start to your bot, press Find Chat ID, then Save." ;;
+                000) problem "The server can't reach api.telegram.org. Check its internet connection and firewall." ;;
+                *) problem "Telegram answered with error $code." ;;
+            esac
+        elif [ -f \#(curlPath) ]; then
+            repair "The bot token on the server is damaged."
+        fi
+        """#
+    }
+
+    private static let servicePath = "/etc/systemd/system/eyebreak-notification.service"
+    private static let timerPath = "/etc/systemd/system/eyebreak-notification.timer"
+    private static let curlPath = "/etc/eyebreak/telegram.curl"
+
+    private static let serviceUnit = """
+    [Unit]
+    Description=EyeBreak eye drop alert to Telegram
+    Wants=network-online.target
+    After=network-online.target
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/bin/curl --config \(curlPath)
+    NoNewPrivileges=yes
+    ProtectSystem=strict
+    ProtectHome=yes
+    PrivateTmp=yes
+    """
+
+    private static func timerUnit(_ calendar: [String]) -> String {
+        """
+        [Unit]
+        Description=EyeBreak eye drop schedule
+
+        [Timer]
+        \(calendar.map { "OnCalendar=\($0)" }.joined(separator: "\n"))
+        AccuracySec=1s
+
+        [Install]
+        WantedBy=timers.target
+        """
+    }
+
+    /// The curl config after its first line, the one with the token.
+    private static func curlSettings(chatID: String, message: String) -> String {
+        """
+        data-urlencode = "chat_id=\(chatID)"
+        data-urlencode = "text=💧 \(curlQuoted(message))"
         silent
         show-error
         fail
@@ -194,27 +327,18 @@ enum ServerScript {
         max-time = 20
         retry = 3
         retry-delay = 10
-        EYEBREAK
-        mv -f /etc/eyebreak/telegram.curl.new /etc/eyebreak/telegram.curl
+        """
+    }
 
-        umask 022
-        cat > /etc/systemd/system/eyebreak-notification.service <<'EYEBREAK'
-        [Unit]
-        Description=EyeBreak eye drop alert to Telegram
-        Wants=network-online.target
-        After=network-online.target
-
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/bin/curl --config /etc/eyebreak/telegram.curl
-        NoNewPrivileges=yes
-        ProtectSystem=strict
-        ProtectHome=yes
-        PrivateTmp=yes
-        EYEBREAK
-
-        \#(schedule)
-        """#
+    /// Both end up inside the scripts, so they must match what Save expects exactly.
+    private static func validate(calendar: [String], chatID: String) throws {
+        guard Telegram.isValidChatID(chatID) else {
+            throw ServerFailure("Find your chat ID in the Telegram tab first.")
+        }
+        let valuePattern = #"^[A-Za-z]{3}(,[A-Za-z]{3})* [0-9]{2}:[0-9]{2}:00 [A-Za-z0-9_+/-]+$"#
+        guard calendar.allSatisfy({ $0.range(of: valuePattern, options: .regularExpression) != nil }) else {
+            throw ServerFailure("The schedule can't be sent to the server.")
+        }
     }
 
     /// Makes text safe inside a double-quoted curl config value. A newline becomes `\n`,
@@ -284,6 +408,52 @@ struct ServerProgress: Equatable {
         let numbers = parts[1].split(separator: "/").compactMap { Int($0) }
         guard numbers.count == 2, numbers[1] > 0 else { return nil }
         self.init(label: parts[2], fraction: Double(numbers[0] - 1) / Double(numbers[1]))
+    }
+}
+
+/// What `ServerScript.check` found.
+struct ServerCheckReport: Equatable {
+    /// Things Save puts right, like a changed file or a stopped schedule.
+    var repairs: [String] = []
+    /// Things Save can't fix, like no internet on the server.
+    var problems: [String] = []
+    var nextAlert: Date?
+    /// Set when the last alert failed. `distantPast` when the server didn't say when.
+    var lastFailure: Date?
+
+    var isHealthy: Bool { repairs.isEmpty && problems.isEmpty && lastFailure == nil }
+
+    init(lines: [String]) {
+        for line in lines {
+            let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let time = TimeInterval(parts[1]).map { $0 > 0 ? Date(timeIntervalSince1970: $0) : .distantPast }
+            switch parts[0] {
+            case "REPAIR": repairs.append(parts[1])
+            case "PROBLEM": problems.append(parts[1])
+            case "NEXT": nextAlert = time.flatMap { $0 == .distantPast ? nil : $0 }
+            case "LASTFAIL": lastFailure = time ?? .distantPast
+            default: break
+            }
+        }
+    }
+
+    /// One line per finding, for the status under the buttons.
+    func summary(host: String, formatter: DateFormatter) -> String {
+        if isHealthy {
+            guard let nextAlert else { return "All good on \(host). No alert times are saved yet." }
+            return "All good on \(host). Next alert: \(formatter.string(from: nextAlert))."
+        }
+        var lines = repairs + problems
+        if let lastFailure {
+            let at = lastFailure == .distantPast ? "" : ", \(formatter.string(from: lastFailure)),"
+            lines.append("The last alert\(at) didn't go out. Details: journalctl -u eyebreak-notification.service")
+        }
+        var text = "Problems on \(host):\n" + lines.map { "• \($0)" }.joined(separator: "\n")
+        if !repairs.isEmpty {
+            text += "\nPress Save to set the service up again."
+        }
+        return text
     }
 }
 

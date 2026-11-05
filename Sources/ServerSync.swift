@@ -63,30 +63,55 @@ final class ServerSync: ObservableObject {
         let done = calendar.isEmpty
             ? "Done. \(connection.host) is ready. To get alerts, turn on reminders under Eye Drops, add a time and save again."
             : "Done. \(connection.host) sends alerts on \(TimeZone.current.identifier) time."
-        run(on: connection, done: done) {
+        run(on: connection, firstStep: "Reading the bot token from your Keychain…") {
             guard let token = readToken() else { throw Telegram.Failure.noToken }
             return try ServerScript.install(calendar: calendar, token: token, chatID: chatID, message: message)
-        } onSuccess: {
+        } onSuccess: { _ in
             Prefs.serverInstalled = ServerInstall(connection: connection, calendar: calendar, chatID: chatID,
                                                   message: message)
+            return .done(done)
         }
     }
 
     func remove() {
         guard let connection = installed?.connection else { return }
-        run(on: connection, done: "Done. Removed from \(connection.host).", isRemoval: true) {
+        run(on: connection, isRemoval: true) {
             ServerScript.remove
-        } onSuccess: {
+        } onSuccess: { _ in
             Prefs.serverInstalled = nil
+            return .done("Done. Removed from \(connection.host).")
         }
     }
 
     func sendTest() {
         guard let connection = installed?.connection else { return }
-        run(on: connection, done: "Done. Check Telegram.") {
+        run(on: connection) {
             ServerScript.sendTest
-        } onSuccess: {}
+        } onSuccess: { _ in
+            .done("Done. Check Telegram.")
+        }
     }
+
+    /// Looks for anything broken on the server, without changing it or reading the Keychain.
+    func check() {
+        guard let installed else { return }
+        let formatter = Self.alertFormatter
+        run(on: installed.connection) {
+            try ServerScript.check(installed)
+        } onSuccess: { lines in
+            let report = ServerCheckReport(lines: lines)
+            let summary = report.summary(host: installed.connection.host, formatter: formatter)
+            return report.isHealthy ? .done(summary) : .failed(summary)
+        }
+    }
+
+    private static let alertFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.doesRelativeDateFormatting = true
+        return formatter
+    }()
 
     /// Stops tracking the server without touching it.
     func forget() {
@@ -101,9 +126,11 @@ final class ServerSync: ObservableObject {
         objectWillChange.send()
     }
 
-    private func run(on connection: ServerConnection, done: String, isRemoval: Bool = false,
+    /// `firstStep` is shown while `script` runs, which may be waiting on the Keychain prompt.
+    /// `onSuccess` gets what the script printed besides its steps, and says how it went.
+    private func run(on connection: ServerConnection, isRemoval: Bool = false, firstStep: String? = nil,
                      script: @escaping @Sendable () throws -> String,
-                     onSuccess: @escaping @MainActor () -> Void) {
+                     onSuccess: @escaping @MainActor ([String]) -> State) {
         guard !isRunning else { return }
         canForget = false
         if let problem = connection.problem {
@@ -112,19 +139,20 @@ final class ServerSync: ObservableObject {
             return
         }
 
-        state = .running(ServerProgress(label: "Connecting to \(connection.host)…", fraction: 0))
+        let connecting = ServerProgress(label: "Connecting to \(connection.host)…", fraction: 0)
+        state = .running(firstStep.map { ServerProgress(label: $0, fraction: 0) } ?? connecting)
         Task {
             do {
                 // Off the main thread: reading the token can show a Keychain prompt.
                 let text = try await Task.detached(operation: script).value
-                try await ServerSSH.run(text, on: connection) { progress in
+                state = .running(connecting)
+                let lines = try await ServerSSH.run(text, on: connection) { progress in
                     Task { @MainActor [weak self] in
                         guard let self, self.isRunning else { return }
                         self.state = .running(progress)
                     }
                 }
-                onSuccess()
-                state = .done(done)
+                state = onSuccess(lines)
             } catch {
                 state = .failed(error.localizedDescription)
                 canForget = isRemoval
@@ -138,15 +166,17 @@ enum ServerSSH {
     /// Long enough for a slow server, and for the retries behind a test message.
     static var timeout: TimeInterval = 150
 
+    /// Returns the lines the script printed other than `STEP` and `ERROR`.
+    @discardableResult
     static func run(_ script: String, on connection: ServerConnection,
-                    onProgress: @escaping @Sendable (ServerProgress) -> Void) async throws {
+                    onProgress: @escaping @Sendable (ServerProgress) -> Void) async throws -> [String] {
         try await Task.detached {
             try runBlocking(script, on: connection, onProgress: onProgress)
         }.value
     }
 
     private static func runBlocking(_ script: String, on connection: ServerConnection,
-                                     onProgress: (ServerProgress) -> Void) throws {
+                                     onProgress: (ServerProgress) -> Void) throws -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = connection.sshArguments
@@ -173,6 +203,7 @@ enum ServerSSH {
         }
 
         var reason: String?
+        var lines: [String] = []
         var pending = Data()
         while case let chunk = output.fileHandleForReading.availableData, !chunk.isEmpty {
             pending.append(chunk)
@@ -183,6 +214,8 @@ enum ServerSSH {
                     onProgress(progress)
                 } else if line.hasPrefix("ERROR ") {
                     reason = String(line.dropFirst("ERROR ".count))
+                } else {
+                    lines.append(line)
                 }
             }
         }
@@ -198,5 +231,6 @@ enum ServerSSH {
             let text = String(decoding: errorData, as: UTF8.self)
             throw ServerFailure(reason ?? ServerErrors.explain(text, connection: connection))
         }
+        return lines
     }
 }
